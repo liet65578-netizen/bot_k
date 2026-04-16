@@ -9,7 +9,7 @@ from telegram.error import BadRequest
 from config import ADMIN_GROUP_ID, ADMIN_IDS
 from database import get_upcoming_events, get_event, signup_for_event, get_user, get_all_users
 from handlers.main_menu import ensure_registered_or_reject
-from i18n import t, get_lang
+from i18n import t, get_lang, DEFAULT_LANG
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ async def notify_new_event(context, event):
             continue
         try:
             from database import get_user_lang
-            u_lang = get_user_lang(uid) or "ru"
+            u_lang = get_user_lang(uid) or DEFAULT_LANG
             await bot.send_message(
                 chat_id=uid,
                 text=t("notify_new_event", u_lang,

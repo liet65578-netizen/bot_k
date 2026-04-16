@@ -65,12 +65,12 @@ async def knowledge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def admin_edit_knowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = await get_lang(update, context)
     if update.effective_user.id not in ADMIN_IDS:
-        await update.callback_query.answer(t("adm_no_access_short", "ru"), show_alert=True)
+        await update.callback_query.answer(t("adm_no_access_short", lang), show_alert=True)
         return ConversationHandler.END
     query = update.callback_query
     await query.answer()
-    lang = await get_lang(update, context)
     buttons = [
         [InlineKeyboardButton(f"{item['icon']} {item['title']}", callback_data=f"adm_edit_{item['id']}")]
         for item in get_knowledge_items()
@@ -89,12 +89,12 @@ async def admin_edit_knowledge(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def admin_edit_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = await get_lang(update, context)
     if update.effective_user.id not in ADMIN_IDS:
-        await update.callback_query.answer(t("adm_no_access_short", "ru"), show_alert=True)
+        await update.callback_query.answer(t("adm_no_access_short", lang), show_alert=True)
         return ConversationHandler.END
     query = update.callback_query
     await query.answer()
-    lang = await get_lang(update, context)
     item_id = query.data.replace("adm_edit_", "")
     item = get_knowledge_item(item_id)
     if not item:
@@ -116,10 +116,10 @@ async def admin_edit_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin_save_knowledge(update, context):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text(t("adm_no_access_short", "ru"))
-        return ConversationHandler.END
     lang = await get_lang(update, context)
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text(t("adm_no_access_short", lang))
+        return ConversationHandler.END
     item_id = context.user_data.get("edit_knowledge_id")
     new_text = update.message.text
     item = get_knowledge_item(item_id) if item_id else None

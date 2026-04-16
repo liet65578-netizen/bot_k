@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from i18n import (
     t, get_all_values, menu_button_re, all_menu_texts,
     is_menu_button, identify_menu_key, LANGUAGES, DEFAULT_LANG, _TEXTS,
+    detect_lang_from_telegram,
 )
 
 
@@ -17,10 +18,10 @@ class TestTranslation:
         assert isinstance(t("welcome", "en"), str)
         assert isinstance(t("welcome", "uk"), str)
 
-    def test_t_fallback_to_ru(self):
-        """Unknown lang → falls back to Russian."""
+    def test_t_fallback_to_default(self):
+        """Unknown lang → falls back to DEFAULT_LANG (en)."""
         result = t("welcome", "xx")
-        assert result == t("welcome", "ru")
+        assert result == t("welcome", DEFAULT_LANG)
 
     def test_t_missing_key(self):
         """Unknown key → returns [key]."""
@@ -89,5 +90,30 @@ class TestMenuHelpers:
 
 
 class TestDefaultLang:
-    def test_default_is_ru(self):
-        assert DEFAULT_LANG == "ru"
+    def test_default_is_en(self):
+        assert DEFAULT_LANG == "en"
+
+    def test_languages_order_pl_en_first(self):
+        codes = list(LANGUAGES.keys())
+        assert codes[0] == "pl"
+        assert codes[1] == "en"
+
+
+class TestDetectLang:
+    def test_exact_match(self):
+        assert detect_lang_from_telegram("pl") == "pl"
+        assert detect_lang_from_telegram("en") == "en"
+        assert detect_lang_from_telegram("ru") == "ru"
+        assert detect_lang_from_telegram("uk") == "uk"
+
+    def test_regional_code(self):
+        assert detect_lang_from_telegram("en-US") == "en"
+        assert detect_lang_from_telegram("en-GB") == "en"
+        assert detect_lang_from_telegram("pl-PL") == "pl"
+
+    def test_unknown_returns_default(self):
+        assert detect_lang_from_telegram("zh") == DEFAULT_LANG
+        assert detect_lang_from_telegram(None) == DEFAULT_LANG
+
+    def test_belarusian_maps_to_russian(self):
+        assert detect_lang_from_telegram("be") == "ru"

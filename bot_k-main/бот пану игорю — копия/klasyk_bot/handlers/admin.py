@@ -40,7 +40,7 @@ from database import (
     delete_event,
     get_active_user_ids,
 )
-from i18n import t, get_lang
+from i18n import t, get_lang, DEFAULT_LANG
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +51,17 @@ logger = logging.getLogger(__name__)
     ADM_EVENT_TIME,
     ADM_EVENT_LOCATION,
     ADM_EVENT_DESC,
+    ADM_EVENT_NOTIFY_CONFIRM,
     ADM_BROADCAST_TEXT,
     ADM_BROADCAST_CONFIRM,
-) = range(100, 107)
+) = range(100, 108)
 
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-def _admin_reply_kb(lang: str = "ru"):
+def _admin_reply_kb(lang: str = DEFAULT_LANG):
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(t("menu_admin", lang))],
@@ -72,7 +73,7 @@ def _admin_reply_kb(lang: str = "ru"):
     )
 
 
-def _admin_main_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+def _admin_main_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(t("adm_stats_btn", lang), callback_data="adm_stats")],
         [
@@ -90,7 +91,7 @@ def _admin_main_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     ])
 
 
-def _back_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+def _back_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(t("adm_back_btn", lang), callback_data="adm_back")]
     ])
@@ -238,7 +239,7 @@ async def _handle_user_action(query, data, lang) -> None:
     if action == "activate":
         set_user_status(uid, "active")
         from database import get_user_lang
-        u_lang = get_user_lang(uid) or "ru"
+        u_lang = get_user_lang(uid) or DEFAULT_LANG
         try:
             await query.get_bot().send_message(chat_id=uid, text=t("adm_user_activated_notify", u_lang), parse_mode="Markdown")
         except Exception as e:
@@ -250,7 +251,7 @@ async def _handle_user_action(query, data, lang) -> None:
     if action == "deactivate":
         set_user_status(uid, "inactive")
         from database import get_user_lang
-        u_lang = get_user_lang(uid) or "ru"
+        u_lang = get_user_lang(uid) or DEFAULT_LANG
         try:
             await query.get_bot().send_message(chat_id=uid, text=t("adm_user_deactivated_notify", u_lang), parse_mode="Markdown")
         except Exception as e:
@@ -263,7 +264,7 @@ async def _handle_user_action(query, data, lang) -> None:
         user = get_user(uid)
         name = user["full_name"] if user else str(uid)
         from database import get_user_lang
-        u_lang = get_user_lang(uid) or "ru"
+        u_lang = get_user_lang(uid) or DEFAULT_LANG
         delete_user(uid)
         try:
             await query.get_bot().send_message(chat_id=uid, text=t("adm_user_deleted_notify", u_lang))
@@ -364,7 +365,7 @@ async def _handle_sub_action(query, data, context, lang) -> None:
         set_submission_status(sub_id, "approved")
         if sub:
             from database import get_user_lang
-            u_lang = get_user_lang(sub["telegram_id"]) or "ru"
+            u_lang = get_user_lang(sub["telegram_id"]) or DEFAULT_LANG
             try:
                 await query.get_bot().send_message(chat_id=sub["telegram_id"],
                     text=t("adm_sub_approved_notify", u_lang, sub_id=sub_id,
@@ -381,7 +382,7 @@ async def _handle_sub_action(query, data, context, lang) -> None:
         set_submission_status(sub_id, "rejected")
         if sub:
             from database import get_user_lang
-            u_lang = get_user_lang(sub["telegram_id"]) or "ru"
+            u_lang = get_user_lang(sub["telegram_id"]) or DEFAULT_LANG
             try:
                 await query.get_bot().send_message(chat_id=sub["telegram_id"],
                     text=t("adm_sub_rejected_notify", u_lang, sub_id=sub_id,
@@ -519,13 +520,44 @@ async def event_got_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     ev["description"] = desc
+    ev["id"] = event_id
+
+    count = len(get_active_user_ids())
+    await update.message.reply_text(
+        t("adm_event_created", lang, event_id=event_id, title=ev["title"],
+          date=ev["date"], time=ev.get("time") or "\u2014",
+          location=ev["location"], description=desc),
+        parse_mode="Markdown",
+    )
+    await update.message.reply_text(
+        t("adm_event_notify_prompt", lang, count=count),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(t("adm_event_notify_yes", lang), callback_data="adm_evnotify_yes")],
+            [InlineKeyboardButton(t("adm_event_notify_no", lang), callback_data="adm_evnotify_no")],
+        ]),
+    )
+    return ADM_EVENT_NOTIFY_CONFIRM
+
+
+async def event_notify_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    lang = await get_lang(update, context)
+    ev = context.user_data.get("adm_event", {})
+
+    if query.data == "adm_evnotify_no":
+        await query.message.edit_text(t("adm_event_notify_skipped", lang))
+        context.user_data.pop("adm_event", None)
+        return ConversationHandler.END
+
+    # Send notification to all users
     from handlers.schedule import notify_new_event
     await notify_new_event(context, ev)
 
-    await update.message.reply_text(
-        t("adm_event_created", lang, event_id=event_id, title=ev["title"],
-          date=ev["date"], time=ev.get("time") or "—",
-          location=ev["location"], description=desc),
+    user_ids = get_active_user_ids()
+    await query.message.edit_text(
+        t("adm_event_notify_done", lang, count=len(user_ids)),
         parse_mode="Markdown",
     )
     context.user_data.pop("adm_event", None)
@@ -581,7 +613,7 @@ async def broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     for uid in user_ids:
         try:
             from database import get_user_lang
-            u_lang = get_user_lang(uid) or "ru"
+            u_lang = get_user_lang(uid) or DEFAULT_LANG
             await bot.send_message(chat_id=uid,
                 text=t("notify_broadcast", u_lang, text=bcast_text), parse_mode="Markdown")
             sent += 1
@@ -615,6 +647,7 @@ event_add_handler = ConversationHandler(
         ADM_EVENT_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, event_got_time)],
         ADM_EVENT_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, event_got_location)],
         ADM_EVENT_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, event_got_desc)],
+        ADM_EVENT_NOTIFY_CONFIRM: [CallbackQueryHandler(event_notify_confirm, pattern="^adm_evnotify_")],
     },
     fallbacks=[CommandHandler("cancel", admin_cancel)],
     allow_reentry=True,

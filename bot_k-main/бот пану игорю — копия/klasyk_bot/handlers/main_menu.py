@@ -7,7 +7,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboard
 from telegram.ext import ContextTypes, ConversationHandler
 from config import ADMIN_IDS
 from database import is_registered, set_user_lang
-from i18n import t, get_lang, set_lang_cached, LANGUAGES, is_menu_button, identify_menu_key
+from i18n import t, get_lang, set_lang_cached, LANGUAGES, DEFAULT_LANG, is_menu_button, identify_menu_key
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-def get_main_keyboard(user_id: int, lang: str = "ru"):
+def get_main_keyboard(user_id: int, lang: str = DEFAULT_LANG):
     if is_admin(user_id):
         return ReplyKeyboardMarkup(
             [

@@ -23,7 +23,7 @@ from telegram.ext import (
 from config import CLASSES, SPECS, ADMIN_GROUP_ID, ADMIN_IDS
 from database import upsert_user, is_registered, get_user
 from handlers.main_menu import get_main_keyboard, cancel
-from i18n import t, get_lang, menu_button_re, is_menu_button
+from i18n import t, get_lang, menu_button_re, is_menu_button, DEFAULT_LANG
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def _class_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _spec_keyboard(selected: list[str], lang: str = "ru") -> InlineKeyboardMarkup:
+def _spec_keyboard(selected: list[str], lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
     rows = []
     for spec in SPECS:
         mark = "✅ " if spec in selected else ""
@@ -78,7 +78,7 @@ def _spec_keyboard(selected: list[str], lang: str = "ru") -> InlineKeyboardMarku
     return InlineKeyboardMarkup(rows)
 
 
-def _confirm_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+def _confirm_keyboard(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(t("reg_confirm_yes", lang), callback_data="reg_confirm_yes"),
