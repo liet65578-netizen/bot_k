@@ -1,12 +1,14 @@
 """
 База данных: SQLite
-Таблицы: users, content_submissions, schedule_events, signups
+Таблицы: users, content_submissions, schedule_events, signups, knowledge_items
 """
 
 import sqlite3
 import logging
 from datetime import datetime
 from pathlib import Path
+
+from config import KNOWLEDGE_ITEMS
 
 DB_PATH = Path(__file__).parent / "klasyk.db"
 logger = logging.getLogger(__name__)
@@ -31,6 +33,11 @@ def init_db() -> None:
                 software       TEXT,
                 registered_at  TEXT NOT NULL,
                 status         TEXT DEFAULT 'pending'  -- pending / active / inactive
+            );
+
+            CREATE TABLE IF NOT EXISTS user_settings (
+                telegram_id    INTEGER PRIMARY KEY,
+                lang           TEXT DEFAULT 'ru'
             );
 
             CREATE TABLE IF NOT EXISTS content_submissions (
@@ -63,9 +70,18 @@ def init_db() -> None:
                 signed_up_at TEXT NOT NULL,
                 UNIQUE(telegram_id, event_id)
             );
+
+            CREATE TABLE IF NOT EXISTS knowledge_items (
+                id          TEXT PRIMARY KEY,
+                icon        TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                text        TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
             """
         )
         _seed_demo_events(conn)
+        _seed_knowledge_items(conn)
     logger.info("✅ БД инициализирована: %s", DB_PATH)
 
 
@@ -74,15 +90,28 @@ def _seed_demo_events(conn: sqlite3.Connection) -> None:
     count = conn.execute("SELECT COUNT(*) FROM schedule_events").fetchone()[0]
     if count == 0:
         events = [
-            ("🏆 Школьная Олимпиада по математике", "02.04.2026", "09:00", "Актовый зал", "Ищем оператора и фотографа"),
-            ("🎭 Весенний концерт", "10.04.2026", "17:00", "Актовый зал", "Нужна съёмочная группа 3-4 человека"),
-            ("⚽ Футбольный турнир", "14.04.2026", "13:00", "Спортплощадка", "Репортажная съёмка матчей"),
-            ("📚 День открытых дверей", "18.04.2026", "10:00", "Школа", "Рекламный ролик + фото"),
-            ("🌿 Экологическая акция", "22.04.2026", "11:00", "Школьный двор", "Коротенькое видео для Instagram"),
+            
         ]
         conn.executemany(
             "INSERT INTO schedule_events (title, date_str, time_str, location, description) VALUES (?,?,?,?,?)",
             events,
+        )
+
+
+def _seed_knowledge_items(conn: sqlite3.Connection) -> None:
+    """Первичное заполнение базы знаний из config.py, если записей ещё нет."""
+    count = conn.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()[0]
+    if count == 0:
+        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+        conn.executemany(
+            """
+            INSERT INTO knowledge_items (id, icon, title, text, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (item["id"], item["icon"], item["title"], item["text"], now)
+                for item in KNOWLEDGE_ITEMS
+            ],
         )
 
 
@@ -325,3 +354,58 @@ def get_events_count() -> int:
 def get_signups_count() -> int:
     with get_conn() as conn:
         return conn.execute("SELECT COUNT(*) FROM signups").fetchone()[0]
+
+
+# ──────────────────────────────────────────────
+# KNOWLEDGE BASE
+# ──────────────────────────────────────────────
+
+def get_knowledge_items() -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM knowledge_items ORDER BY rowid ASC"
+        ).fetchall()
+
+
+def get_knowledge_item(item_id: str) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM knowledge_items WHERE id=?",
+            (item_id,),
+        ).fetchone()
+
+
+def update_knowledge_item(item_id: str, text: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE knowledge_items
+            SET text=?, updated_at=?
+            WHERE id=?
+            """,
+            (text, datetime.now().strftime("%d.%m.%Y %H:%M"), item_id),
+        )
+        return cur.rowcount > 0
+
+
+# ──────────────────────────────────────────────
+# USER SETTINGS (language)
+# ──────────────────────────────────────────────
+
+def get_user_lang(telegram_id: int) -> str | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT lang FROM user_settings WHERE telegram_id=?", (telegram_id,)
+        ).fetchone()
+        return row["lang"] if row else None
+
+
+def set_user_lang(telegram_id: int, lang: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_settings (telegram_id, lang) VALUES (?, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET lang=excluded.lang
+            """,
+            (telegram_id, lang),
+        )

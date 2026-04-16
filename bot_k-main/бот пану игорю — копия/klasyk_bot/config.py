@@ -14,14 +14,23 @@ if not BOT_TOKEN:
 # ID закрытой группы «Klasyk TV Admin» (отрицательное число, напр. -1001234567890)
 ADMIN_GROUP_ID: int = int(os.getenv("ADMIN_GROUP_ID", "0"))
 
-# ID главного администратора (твой Telegram ID, напр. 123456789)
-MAIN_ADMIN_ID: int = int(os.getenv("MAIN_ADMIN_ID", "0"))
+# ID(ы) администраторов:
+# поддерживаем как старый формат MAIN_ADMIN_ID=123
+# так и список MAIN_ADMIN_ID=123,456 или отдельную переменную ADMIN_IDS=123,456
+_admin_ids_raw = os.getenv("ADMIN_IDS") or os.getenv("MAIN_ADMIN_ID", "0")
+ADMIN_IDS: list[int] = [
+    int(x.strip())
+    for x in _admin_ids_raw.split(",")
+    if x.strip()
+]
+
+# Для обратной совместимости "главный админ" — первый ID из списка.
+MAIN_ADMIN_ID: int = ADMIN_IDS[0] if ADMIN_IDS else 0
 
 # ─── Списки классов ──────────────────────────────────────────────────────────
 CLASSES = [
     "1A", "1B", "1C", "1D",
     "2A", "2B", "2C", "2D",
-    "Учитель / Сотрудник",
 ]
 
 # ─── Специализации ───────────────────────────────────────────────────────────
@@ -114,7 +123,7 @@ KNOWLEDGE_ITEMS = [
             "📐 Горизонтальное видео для YouTube / вертикальное для Reels\n"
             "🎬 Снять 3+ дублей каждой сцены\n"
             "🔊 Проверить звук первых 10 секунд\n"
-            "📁 Сразу создать папку с именем события\n"
         ),
     },
 ]
+
