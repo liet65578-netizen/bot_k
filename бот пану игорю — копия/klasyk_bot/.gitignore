@@ -1,0 +1,4 @@
+.env
+klasyk.db
+__pycache__/
+*.pyc
