@@ -6,8 +6,8 @@ import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from config import ADMIN_IDS
-from database import is_registered, set_user_lang
-from i18n import t, get_lang, set_lang_cached, LANGUAGES, DEFAULT_LANG, is_menu_button, identify_menu_key
+from database import is_registered, set_user_lang, get_user_status
+from i18n import t, get_lang, set_lang_cached, detect_lang_from_telegram, LANGUAGES, DEFAULT_LANG, is_menu_button, identify_menu_key
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ def is_admin(user_id: int) -> bool:
 
 
 def get_main_keyboard(user_id: int, lang: str = DEFAULT_LANG):
+    status = get_user_status(user_id)
     if is_admin(user_id):
         return ReplyKeyboardMarkup(
             [
@@ -27,12 +28,24 @@ def get_main_keyboard(user_id: int, lang: str = DEFAULT_LANG):
             resize_keyboard=True,
             input_field_placeholder=t("menu_placeholder", lang),
         )
+    if status == "active":
+        return ReplyKeyboardMarkup(
+            [
+                [KeyboardButton(t("menu_team", lang)), KeyboardButton(t("menu_content", lang))],
+                [KeyboardButton(t("menu_schedule", lang)), KeyboardButton(t("menu_knowledge", lang))],
+                [KeyboardButton(t("menu_profile", lang)), KeyboardButton(t("menu_lang", lang))],
+            ],
+            resize_keyboard=True,
+            input_field_placeholder=t("menu_placeholder", lang),
+        )
+    # Unregistered, pending, or inactive — minimal keyboard
+    buttons = []
+    if not status:
+        # Not registered yet
+        buttons.append([KeyboardButton(t("menu_team", lang))])
+    buttons.append([KeyboardButton(t("menu_lang", lang))])
     return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton(t("menu_team", lang)), KeyboardButton(t("menu_content", lang))],
-            [KeyboardButton(t("menu_schedule", lang)), KeyboardButton(t("menu_knowledge", lang))],
-            [KeyboardButton(t("menu_profile", lang)), KeyboardButton(t("menu_lang", lang))],
-        ],
+        buttons,
         resize_keyboard=True,
         input_field_placeholder=t("menu_placeholder", lang),
     )
@@ -46,35 +59,62 @@ def language_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-async def ensure_registered_or_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def ensure_active_or_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Return True only for admins and active users. Block everyone else with an appropriate message."""
     user_id = update.effective_user.id
-    if is_admin(user_id) or is_registered(user_id):
+    if is_admin(user_id):
         return True
+    status = get_user_status(user_id)
+    if status == "active":
+        return True
+
     lang = await get_lang(update, context)
     target = update.callback_query.message if update.callback_query else update.message
-    if target:
-        await target.reply_text(
-            t("access_denied", lang),
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard(user_id, lang),
-        )
+    if not target:
+        return False
+
+    if status == "inactive":
+        msg_key = "access_deactivated"
+    elif status == "pending":
+        msg_key = "access_pending"
+    else:
+        msg_key = "access_denied"
+
+    await target.reply_text(
+        t(msg_key, lang),
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(user_id, lang),
+    )
     return False
 
 
+# Legacy alias — some handlers import this name
+ensure_registered_or_reject = ensure_active_or_reject
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = await get_lang(update, context)
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
     from database import get_user_lang
     db_lang = get_user_lang(user_id)
     if db_lang is None:
-        # First time user — show language selection
-        await update.message.reply_text(
-            t("lang_choose", lang),
-            parse_mode="Markdown",
-            reply_markup=language_keyboard(),
-        )
-        return
+        lang = detect_lang_from_telegram(user.language_code)
+        set_user_lang(user_id, lang)
+        set_lang_cached(context, lang)
+    else:
+        lang = await get_lang(update, context)
     keyboard = get_main_keyboard(user_id, lang)
+
+    status = get_user_status(user_id)
+    if status == "pending":
+        await update.message.reply_text(
+            t("access_pending", lang), parse_mode="Markdown", reply_markup=keyboard)
+        return
+    if status == "inactive":
+        await update.message.reply_text(
+            t("access_deactivated", lang), parse_mode="Markdown", reply_markup=keyboard)
+        return
+
     await update.message.reply_text(
         t("welcome", lang),
         parse_mode="Markdown",
@@ -85,6 +125,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = await get_lang(update, context)
     user_id = update.effective_user.id
+
+    if not await ensure_active_or_reject(update, context):
+        return
+
     keyboard = get_main_keyboard(user_id, lang)
     await update.message.reply_text(
         t("main_menu", lang),
@@ -130,12 +174,14 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     text = update.message.text if update.message else None
     query = update.callback_query
     lang = await get_lang(update, context)
+    user_id = update.effective_user.id
 
     if query:
         await query.answer()
         data = query.data
         if data == "main_menu":
-            user_id = update.effective_user.id
+            if not await ensure_active_or_reject(update, context):
+                return
             keyboard = get_main_keyboard(user_id, lang)
             await query.message.reply_text(
                 t("main_menu", lang),
@@ -147,18 +193,47 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     menu_key = identify_menu_key(text)
-    if menu_key == "menu_schedule":
-        if not await ensure_registered_or_reject(update, context):
+
+    # Language switch is always allowed
+    if menu_key == "menu_lang":
+        await update.message.reply_text(
+            t("lang_choose", lang),
+            parse_mode="Markdown",
+            reply_markup=language_keyboard(),
+        )
+        return
+
+    # Admin panel — only for admins, checked inside admin_cmd
+    if menu_key == "menu_admin":
+        from handlers.admin import admin_cmd
+        await admin_cmd(update, context)
+        return
+
+    # "Хочу в команду" — allow for unregistered only; block for inactive
+    if menu_key == "menu_team":
+        status = get_user_status(user_id)
+        if status == "inactive":
+            await update.message.reply_text(
+                t("access_deactivated", lang),
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(user_id, lang),
+            )
             return
+        # For unregistered/pending — let registration ConversationHandler handle it
+        # (it's registered above this handler in priority, so this is a fallback)
+        return
+
+    # Everything else requires active status
+    if not await ensure_active_or_reject(update, context):
+        return
+
+    if menu_key == "menu_schedule":
         from handlers.schedule import show_schedule
         await show_schedule(update, context)
     elif menu_key == "menu_knowledge":
-        if not await ensure_registered_or_reject(update, context):
-            return
         from handlers.knowledge import show_knowledge_menu
         await show_knowledge_menu(update, context)
     elif menu_key == "menu_profile":
-        user_id = update.effective_user.id
         if is_admin(user_id):
             await update.message.reply_text(
                 t("admin_profile_text", lang),
@@ -166,29 +241,12 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 reply_markup=get_main_keyboard(user_id, lang),
             )
         else:
-            if not await ensure_registered_or_reject(update, context):
-                return
             from handlers.profile import show_profile
             await show_profile(update, context)
-    elif menu_key == "menu_admin":
-        from handlers.admin import admin_cmd
-        await admin_cmd(update, context)
-    elif menu_key == "menu_lang":
-        await update.message.reply_text(
-            t("lang_choose", lang),
-            parse_mode="Markdown",
-            reply_markup=language_keyboard(),
-        )
-    elif menu_key == "menu_team":
-        # Handled by registration ConversationHandler entry_point
-        pass
     elif menu_key == "menu_content":
-        if not await ensure_registered_or_reject(update, context):
-            return
         # Handled by content ConversationHandler entry_point
         pass
     else:
-        user_id = update.effective_user.id
         keyboard = get_main_keyboard(user_id, lang)
         await update.message.reply_text(
             t("use_buttons", lang),

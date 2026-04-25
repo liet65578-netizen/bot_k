@@ -14,9 +14,11 @@ if BOT_ROOT not in sys.path:
 
 @pytest.fixture()
 def tmp_db(tmp_path, monkeypatch):
-    """Create a temporary database and patch database.DB_PATH."""
-    db_file = tmp_path / "test_klasyk.db"
+    """Create temporary data directory and patch database paths."""
+    data_dir = tmp_path / "data"
     import database
-    monkeypatch.setattr(database, "DB_PATH", db_file)
+    monkeypatch.setattr(database, "DATA_DIR", data_dir)
+    monkeypatch.setattr(database, "GLOBAL_DB", data_dir / "global.db")
+    monkeypatch.setattr(database, "USERS_DIR", data_dir / "users")
     database.init_db()
-    return db_file
+    return data_dir

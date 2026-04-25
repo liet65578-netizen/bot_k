@@ -21,7 +21,7 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
-from database import init_db
+from database import init_db, DATA_DIR
 from handlers.registration import (
     registration_handler,
     REGISTRATION_STATES,
@@ -41,6 +41,7 @@ from handlers.schedule import schedule_handler
 from handlers.knowledge import (
     knowledge_handler,
     admin_edit_knowledge,
+    admin_choose_kb_lang,
     admin_edit_item,
     admin_save_knowledge,
 )
@@ -62,7 +63,8 @@ def _acquire_single_instance_lock() -> None:
     Предотвращаем 409 Conflict:
     Telegram запрещает параллельные getUpdates для разных экземпляров того же бота.
     """
-    lock_path = Path(__file__).resolve().parent / "bot.lock"
+    lock_path = DATA_DIR / "bot.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     pid = os.getpid()
     try:
         # Exclusive create
@@ -118,16 +120,10 @@ async def _log_message_update(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def _log_callback_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Глобальный лог нажатий inline-кнопок."""
+    """Глобальный лог нажатий inline-кнопок (только логирование, НЕ отвечаем на query)."""
     if not update.effective_user or not update.callback_query:
         return
     q = update.callback_query
-    # Чтобы не оставлять "крутилку" у пользователя, отвечаем сразу.
-    try:
-        await q.answer()
-    except Exception:
-        pass
-
     logger.debug(
         "UPDATE callback user_id=%s username=%s chat_id=%s data=%r",
         update.effective_user.id,
@@ -148,14 +144,15 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
 edit_knowledge_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(admin_edit_knowledge, pattern="^adm_edit_knowledge$")],
     states={
+        "WAIT_KNOWLEDGE_LANG": [CallbackQueryHandler(admin_choose_kb_lang, pattern="^adm_kb_lang_")],
         # Сначала админ выбирает материал (кнопки adm_edit_...),
         # затем вводит новый текст (MessageHandler).
         "WAIT_KNOWLEDGE_SELECT": [CallbackQueryHandler(admin_edit_item, pattern="^adm_edit_")],
         "WAIT_KNOWLEDGE_TEXT": [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_save_knowledge)],
     },
     fallbacks=[CommandHandler("cancel", cancel)],
-    # Для диалога "клик по кнопке -> потом ввод текста" per_message=True может ломать трекинг.
     per_message=False,
+    conversation_timeout=600,
 )
 
 def main() -> None:

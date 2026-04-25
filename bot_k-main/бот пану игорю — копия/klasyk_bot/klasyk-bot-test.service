@@ -1,0 +1,72 @@
+[Unit]
+Description=Klasyk Telegram Bot (TEST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=klasykbot
+Group=klasykbot
+WorkingDirectory=/opt/klasykbot
+ExecStart=/opt/klasykbot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=15
+
+# ── Переменные ──
+EnvironmentFile=/opt/klasykbot/.env.test
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=BOT_ENV=test
+Environment=BOT_DATA_DIR=/opt/klasykbot/data_test
+
+# ── Логирование ──
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=klasyk-bot-test
+
+# ── Лимиты ресурсов ──
+MemoryMax=512M
+MemoryHigh=384M
+CPUQuota=25%
+LimitNOFILE=1024
+TasksMax=64
+
+# ══════════════════════════════════════════════════════════════
+#  ПЕСОЧНИЦА (Sandbox)
+# ══════════════════════════════════════════════════════════════
+ProtectSystem=strict
+ReadWritePaths=/opt/klasykbot/data_test /opt/klasykbot/logs_test
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectHostname=yes
+ProtectClock=yes
+
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @raw-io @clock @cpu-emulation @debug @obsolete @module
+KeyringMode=private
+LockPersonality=yes
+
+InaccessiblePaths=/boot
+ReadOnlyPaths=/etc
+TemporaryFileSystem=/var:ro
+BindReadOnlyPaths=/var/run/dbus
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,20 @@ import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# ── Budget ────────────────────────────────────────────────────────────────────
+# General log : 200 MB × 10 = 2 GB max  (INFO+)
+# Error   log : 100 MB × 10 = 1 GB max  (ERROR+)
+# Console     : INFO, compact one-liner
+_GENERAL_MAX   = 200 * 1024 * 1024   # 200 MB per file
+_GENERAL_COUNT = 9                    # +1 active = 10 files
+_ERROR_MAX     = 100 * 1024 * 1024   # 100 MB per file
+_ERROR_COUNT   = 9                    # +1 active = 10 files
+
+# ── Compact format (glog-inspired) ───────────────────────────────────────────
+# I0420 14:30:05 module|message
+_COMPACT_FMT  = "%(levelname).1s%(asctime)s %(name)s|%(message)s"
+_COMPACT_DATE  = "%m%d %H:%M:%S"
+
 
 class _MaskSecretFilter(logging.Filter):
     def __init__(self, secrets: list[str]) -> None:
@@ -18,8 +32,7 @@ class _MaskSecretFilter(logging.Filter):
         masked = msg
         for secret in self._secrets:
             if secret and secret in masked:
-                masked = masked.replace(secret, "<SECRET>")
-        # If we changed message content, put it back
+                masked = masked.replace(secret, "<SEC>")
         if masked != msg:
             record.msg = masked
             record.args = ()
@@ -27,53 +40,59 @@ class _MaskSecretFilter(logging.Filter):
 
 
 def setup_logging(bot_token: str | None = None) -> Path:
-    """
-    Полное логирование: консоль + файл (rotating).
-    Маскируем BOT_TOKEN, чтобы он не попал в логи.
-    """
+    """Configure production logging: compact format, 2 GB general + 1 GB errors."""
     base_dir = Path(__file__).resolve().parent
-    logs_dir = base_dir / "logs"
+    _env_suffix = os.getenv("BOT_ENV", "")
+    logs_dir = base_dir / (f"logs_{_env_suffix}" if _env_suffix else "logs")
     logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / "bot_full.log"
+
+    log_path = logs_dir / "bot.log"
+    err_path = logs_dir / "error.log"
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
-    # Убираем прошлые handlers (на случай повторного запуска в IDE)
     for h in list(root.handlers):
         root.removeHandler(h)
 
-    fmt = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    file_handler = RotatingFileHandler(
-        filename=str(log_path),
-        mode="a",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(fmt)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(fmt)
-
+    fmt = logging.Formatter(fmt=_COMPACT_FMT, datefmt=_COMPACT_DATE)
     secrets = [bot_token] if bot_token else []
     filt = _MaskSecretFilter(secrets=secrets)
-    file_handler.addFilter(filt)
-    console_handler.addFilter(filt)
 
-    root.addHandler(file_handler)
-    root.addHandler(console_handler)
+    # ── General log (INFO+) → 2 GB total ─────────────────────────────────
+    fh = RotatingFileHandler(
+        str(log_path), mode="a",
+        maxBytes=_GENERAL_MAX, backupCount=_GENERAL_COUNT,
+        encoding="utf-8",
+    )
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    fh.addFilter(filt)
+    root.addHandler(fh)
 
-    # PTB/HTTPX внутренности
-    logging.getLogger("telegram").setLevel(logging.DEBUG)
-    logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
-    logging.getLogger("httpx").setLevel(logging.DEBUG)
+    # ── Error log (ERROR+) → 1 GB total ──────────────────────────────────
+    eh = RotatingFileHandler(
+        str(err_path), mode="a",
+        maxBytes=_ERROR_MAX, backupCount=_ERROR_COUNT,
+        encoding="utf-8",
+    )
+    eh.setLevel(logging.ERROR)
+    eh.setFormatter(fmt)
+    eh.addFilter(filt)
+    root.addHandler(eh)
+
+    # ── Console (INFO+, same compact format) → goes to journald ──────────
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.WARNING)
+    ch.setFormatter(fmt)
+    ch.addFilter(filt)
+    root.addHandler(ch)
+
+    # Silence noisy libraries
+    logging.getLogger("telegram").setLevel(logging.INFO)
+    logging.getLogger("telegram.ext").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     return log_path
 

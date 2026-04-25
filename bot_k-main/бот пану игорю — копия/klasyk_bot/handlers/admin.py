@@ -1,6 +1,7 @@
 ﻿"""
 Admin panel — full management via Telegram with i18n.
 """
+import asyncio
 import json
 import logging
 from telegram import (
@@ -39,8 +40,11 @@ from database import (
     add_event,
     delete_event,
     get_active_user_ids,
+    get_storage_stats,
+    get_top_users_by_storage,
+    get_users_over_threshold,
 )
-from i18n import t, get_lang, DEFAULT_LANG
+from i18n import t, get_lang, DEFAULT_LANG, esc_md
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +92,7 @@ def _admin_main_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
             InlineKeyboardButton(t("adm_broadcast_btn", lang), callback_data="adm_broadcast"),
             InlineKeyboardButton(t("adm_edit_kb_btn", lang), callback_data="adm_edit_knowledge"),
         ],
+        [InlineKeyboardButton(t("adm_storage_btn", lang), callback_data="adm_storage")],
     ])
 
 
@@ -126,6 +131,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "adm_stats":
         await _show_stats(query, lang)
         return
+    if data == "adm_storage":
+        await _show_storage(query, lang)
+        return
     if data == "adm_users":
         await _show_users_menu(query, lang)
         return
@@ -151,6 +159,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _handle_event_action(query, data, lang)
         return
 
+    # Fallback: unknown adm_ pattern — answer silently so button spinner stops
+    logger.warning("Unhandled admin callback: %s", data)
+
 
 # ---- Stats ----
 
@@ -163,6 +174,78 @@ async def _show_stats(query, lang) -> None:
              total=uc["total"], active=uc["active"], pending=uc["pending"], inactive=uc["inactive"],
              sub_total=sc["total"], sub_new=sc["new"], sub_approved=sc["approved"], sub_rejected=sc["rejected"],
              events=ec, signups=su)
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=_back_kb(lang))
+
+
+# ---- Storage monitor ----
+
+def _fmt_size(b: int) -> str:
+    """Human-readable size: 1.5 GB, 200 MB, 36 KB, 512 B."""
+    if b >= 1_073_741_824:
+        return f"{b / 1_073_741_824:.1f} GB"
+    if b >= 1_048_576:
+        return f"{b / 1_048_576:.1f} MB"
+    if b >= 1024:
+        return f"{b / 1024:.0f} KB"
+    return f"{b} B"
+
+
+async def _show_storage(query, lang) -> None:
+    s = get_storage_stats()
+
+    lines = [
+        t("adm_storage_title", lang),
+        "",
+        t("adm_storage_total", lang, size=_fmt_size(s["bot_total"])),
+        "",
+        t("adm_storage_breakdown_title", lang),
+        t("adm_storage_breakdown_code", lang, size=_fmt_size(s["code_size"])),
+        t("adm_storage_breakdown_venv", lang, size=_fmt_size(s["venv_size"])),
+        t("adm_storage_breakdown_data", lang, size=_fmt_size(s["data_size"])),
+        t(
+            "adm_storage_breakdown_global_db",
+            lang,
+            size=_fmt_size(s["global_db_size"]),
+            wal=s["journal_mode"],
+        ),
+        t(
+            "adm_storage_breakdown_user_dbs",
+            lang,
+            size=_fmt_size(s["user_db_total"]),
+            users=s["user_count"],
+        ),
+        t("adm_storage_breakdown_logs", lang, size=_fmt_size(s["all_logs_size"])),
+        "",
+        t("adm_storage_tables_title", lang),
+        t("adm_storage_tables_users_subs", lang, users=s["rows_users"], subs=s["rows_submissions"]),
+        t("adm_storage_tables_events_signups", lang, events=s["rows_events"], signups=s["rows_signups"]),
+        t("adm_storage_tables_kb", lang, kb=s["rows_knowledge"]),
+    ]
+
+    top = get_top_users_by_storage(5)
+    if top:
+        lines.append("")
+        lines.append(t("adm_storage_top_title", lang))
+        for i, u in enumerate(top, 1):
+            user = get_user(u["telegram_id"])
+            name = esc_md(user["full_name"]) if user else str(u["telegram_id"])
+            lines.append(t("adm_storage_top_row", lang, n=i, name=name, size=_fmt_size(u["size"])))
+
+    alerts = get_users_over_threshold()
+    if alerts:
+        lines.append("")
+        lines.append(t("adm_storage_alerts_title", lang))
+        for a in alerts:
+            user = get_user(a["telegram_id"])
+            name = esc_md(user["full_name"]) if user else str(a["telegram_id"])
+            lines.append(t("adm_storage_alerts_row", lang, name=name, size=_fmt_size(a["size"])))
+    else:
+        lines.append("")
+        lines.append(t("adm_storage_no_anomalies", lang))
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n_\\.\\.\\. truncated_"
     await query.message.edit_text(text, parse_mode="Markdown", reply_markup=_back_kb(lang))
 
 
@@ -198,7 +281,7 @@ async def _handle_users(query, data, lang) -> None:
     for u in users[:20]:
         icon = status_icons.get(u["status"], "❔")
         specs = json.loads(u["specs"])
-        text += f"{icon} *{u['full_name']}* | {u['class_name']}\n    🎯 {', '.join(specs)}\n    📅 {u['registered_at']}\n\n"
+        text += f"{icon} *{esc_md(u['full_name'])}* | {esc_md(u['class_name'])}\n    🎯 {esc_md(', '.join(specs))}\n    📅 {u['registered_at']}\n\n"
         buttons.append([InlineKeyboardButton(f"⚙️ {u['full_name'][:25]}", callback_data=f"adm_user_view_{u['telegram_id']}")])
     buttons.append([InlineKeyboardButton(t("adm_back_short", lang), callback_data="adm_users")])
     if len(text) > 4000:
@@ -221,10 +304,10 @@ async def _handle_user_action(query, data, lang) -> None:
         status_icons = {"pending": "⏳", "active": "✅", "inactive": "❌"}
         status_label = t(f"status_{user['status']}", lang)
         text = t("adm_user_card", lang,
-                 full_name=user["full_name"], class_name=user["class_name"],
-                 specs=", ".join(specs), software=user["software"] or "—",
+                 full_name=esc_md(user["full_name"]), class_name=esc_md(user["class_name"]),
+                 specs=esc_md(", ".join(specs)), software=esc_md(user["software"] or "—"),
                  registered_at=user["registered_at"], status=f"{status_icons.get(user['status'],'')} {status_label}",
-                 username=user["username"] or "—", uid=uid)
+                 username=esc_md(user["username"] or "—"), uid=uid)
         buttons = []
         if user["status"] != "active":
             buttons.append([InlineKeyboardButton(t("adm_user_activate_btn", lang), callback_data=f"adm_user_activate_{uid}")])
@@ -271,7 +354,7 @@ async def _handle_user_action(query, data, lang) -> None:
         except Exception as e:
             logger.warning("Notify user %s error: %s", uid, e)
         await query.message.edit_text(
-            t("adm_user_deleted", lang, name=name), parse_mode="Markdown",
+            t("adm_user_deleted", lang, name=esc_md(name)), parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("adm_back_short", lang), callback_data="adm_users")]]))
         return
 
@@ -305,7 +388,7 @@ async def _handle_subs_list(query, data, lang) -> None:
     buttons = []
     for s in subs[:15]:
         icon = status_icons.get(s["status"], "❔")
-        text += f"{icon} *#{s['id']}* — {s['content_type']}\n    👤 {s['submitter_name']} | 📍 {s['location']}\n    📅 {s['submitted_at']}\n\n"
+        text += f"{icon} *#{s['id']}* — {esc_md(s['content_type'])}\n    👤 {esc_md(s['submitter_name'])} | 📍 {esc_md(s['location'])}\n    📅 {s['submitted_at']}\n\n"
         buttons.append([InlineKeyboardButton(f"👁 #{s['id']}", callback_data=f"adm_sub_view_{s['id']}")])
     buttons.append([InlineKeyboardButton(t("adm_back_short", lang), callback_data="adm_subs")])
     if len(text) > 4000:
@@ -326,8 +409,9 @@ async def _handle_sub_action(query, data, context, lang) -> None:
             return
         status_labels = {"new": "🆕", "approved": "✅", "rejected": "❌"}
         file_info = f"{'Есть (' + sub['file_type'] + ')' if sub['file_id'] else 'Нет (текст)'}"
-        text = t("adm_sub_card", lang, sub_id=sub["id"], submitter=sub["submitter_name"],
-                 ctype=sub["content_type"], location=sub["location"], description=sub["description"],
+        text = t("adm_sub_card", lang, sub_id=sub["id"], submitter=esc_md(sub["submitter_name"]),
+                 ctype=esc_md(sub["content_type"]), location=esc_md(sub["location"]),
+                 description=esc_md(sub["description"]),
                  file_info=file_info, date=sub["submitted_at"],
                  status=f"{status_labels.get(sub['status'],'')} {sub['status']}")
         buttons = []
@@ -411,8 +495,8 @@ async def _show_events_admin(query, lang) -> None:
     buttons = []
     for ev in events:
         signups = get_event_signups(ev["id"])
-        text += t("adm_event_row", lang, title=ev["title"], date=ev["date_str"],
-                  time=ev["time_str"] or "—", location=ev["location"], signups=len(signups))
+        text += t("adm_event_row", lang, title=esc_md(ev["title"]), date=ev["date_str"],
+                  time=ev["time_str"] or "—", location=esc_md(ev["location"]), signups=len(signups))
         buttons.append([
             InlineKeyboardButton(f"👁 {ev['title'][:25]}", callback_data=f"adm_ev_view_{ev['id']}"),
             InlineKeyboardButton("🗑", callback_data=f"adm_ev_del_{ev['id']}"),
@@ -435,12 +519,13 @@ async def _handle_event_action(query, data, lang) -> None:
             await query.answer(t("sched_event_not_found", lang), show_alert=True)
             return
         signups = get_event_signups(ev_id)
-        text = t("adm_event_view", lang, title=ev["title"], date=ev["date_str"],
-                 time=ev["time_str"] or "—", location=ev["location"], description=ev["description"] or "—")
+        text = t("adm_event_view", lang, title=esc_md(ev["title"]), date=ev["date_str"],
+                 time=ev["time_str"] or "—", location=esc_md(ev["location"]),
+                 description=esc_md(ev["description"] or "—"))
         if signups:
             text += t("adm_event_signups", lang, count=len(signups))
             for s in signups:
-                text += f"  • {s['full_name']} ({s['class_name']}) — @{s['username'] or '—'}\n"
+                text += f"  • {esc_md(s['full_name'])} ({esc_md(s['class_name'])}) — @{esc_md(s['username'] or '—')}\n"
         else:
             text += t("adm_event_no_signups", lang)
         await query.message.edit_text(text, parse_mode="Markdown",
@@ -477,7 +562,7 @@ async def event_got_title(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     lang = await get_lang(update, context)
     title = update.message.text.strip()
     context.user_data["adm_event"]["title"] = title
-    await update.message.reply_text(t("adm_event_step2", lang, title=title), parse_mode="Markdown")
+    await update.message.reply_text(t("adm_event_step2", lang, title=esc_md(title)), parse_mode="Markdown")
     return ADM_EVENT_DATE
 
 
@@ -497,7 +582,7 @@ async def event_got_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lang = await get_lang(update, context)
     time_str = update.message.text.strip()
     context.user_data["adm_event"]["time"] = time_str if time_str != "—" else None
-    await update.message.reply_text(t("adm_event_step4", lang, time=time_str), parse_mode="Markdown")
+    await update.message.reply_text(t("adm_event_step4", lang, time=esc_md(time_str)), parse_mode="Markdown")
     return ADM_EVENT_LOCATION
 
 
@@ -505,7 +590,7 @@ async def event_got_location(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang = await get_lang(update, context)
     location = update.message.text.strip()
     context.user_data["adm_event"]["location"] = location
-    await update.message.reply_text(t("adm_event_step5", lang, location=location), parse_mode="Markdown")
+    await update.message.reply_text(t("adm_event_step5", lang, location=esc_md(location)), parse_mode="Markdown")
     return ADM_EVENT_DESC
 
 
@@ -524,9 +609,9 @@ async def event_got_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     count = len(get_active_user_ids())
     await update.message.reply_text(
-        t("adm_event_created", lang, event_id=event_id, title=ev["title"],
+        t("adm_event_created", lang, event_id=event_id, title=esc_md(ev["title"]),
           date=ev["date"], time=ev.get("time") or "\u2014",
-          location=ev["location"], description=desc),
+          location=esc_md(ev["location"]), description=esc_md(desc)),
         parse_mode="Markdown",
     )
     await update.message.reply_text(
@@ -585,7 +670,7 @@ async def broadcast_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["adm_broadcast_text"] = text
     count = context.user_data.get("adm_broadcast_count", 0)
     await update.message.reply_text(
-        t("adm_broadcast_preview", lang, text=text, count=count),
+        t("adm_broadcast_preview", lang, text=esc_md(text), count=count),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(t("adm_broadcast_send_btn", lang), callback_data="adm_bcast_yes"),
@@ -609,16 +694,20 @@ async def broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     bcast_text = context.user_data.get("adm_broadcast_text", "")
     user_ids = get_active_user_ids()
     bot = query.get_bot()
-    sent, failed = 0, 0
-    for uid in user_ids:
+
+    async def _send(uid):
         try:
             from database import get_user_lang
             u_lang = get_user_lang(uid) or DEFAULT_LANG
             await bot.send_message(chat_id=uid,
-                text=t("notify_broadcast", u_lang, text=bcast_text), parse_mode="Markdown")
-            sent += 1
+                text=t("notify_broadcast", u_lang, text=esc_md(bcast_text)), parse_mode="Markdown")
+            return True
         except Exception:
-            failed += 1
+            return False
+
+    results = await asyncio.gather(*[_send(uid) for uid in user_ids])
+    sent = sum(1 for r in results if r)
+    failed = sum(1 for r in results if not r)
 
     await query.message.edit_text(
         t("adm_broadcast_done", lang, sent=sent, failed=failed), parse_mode="Markdown",
@@ -651,6 +740,8 @@ event_add_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", admin_cancel)],
     allow_reentry=True,
+    per_message=False,
+    conversation_timeout=600,
 )
 
 broadcast_handler = ConversationHandler(
@@ -661,4 +752,6 @@ broadcast_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", admin_cancel)],
     allow_reentry=True,
+    per_message=False,
+    conversation_timeout=600,
 )

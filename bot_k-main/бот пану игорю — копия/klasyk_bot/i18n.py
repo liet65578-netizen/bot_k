@@ -71,6 +71,15 @@ def t(key: str, lang: str = DEFAULT_LANG, **kwargs) -> str:
     return text
 
 
+# Markdown v1 special characters
+_MD_ESCAPE_RE = re.compile(r'([_*`\[\]])')
+
+
+def esc_md(text) -> str:
+    """Escape Markdown v1 special chars in user-provided data."""
+    return _MD_ESCAPE_RE.sub(r'\\\1', str(text))
+
+
 def get_all_values(key: str) -> list[str]:
     """Get all language variants for a translation key."""
     values: list[str] = []

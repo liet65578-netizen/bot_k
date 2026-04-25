@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 
 from database import get_user, get_user_signups
 from handlers.main_menu import get_main_keyboard, ensure_registered_or_reject
-from i18n import t, get_lang
+from i18n import t, get_lang, esc_md
 
 
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -33,13 +33,13 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if signups:
         signup_text = t("profile_signups", lang)
         for ev in signups:
-            signup_text += f"• {ev['title']} — {ev['date_str']}\n"
+            signup_text += f"• {esc_md(ev['title'])} — {ev['date_str']}\n"
 
     text = t("profile_title", lang) + t("profile_info", lang,
-        full_name=row["full_name"],
-        class_name=row["class_name"],
-        specs=", ".join(specs),
-        software=row["software"] or "—",
+        full_name=esc_md(row["full_name"]),
+        class_name=esc_md(row["class_name"]),
+        specs=esc_md(", ".join(specs)),
+        software=esc_md(row["software"] or "—"),
         registered_at=row["registered_at"],
         status=status,
     ) + signup_text
@@ -54,6 +54,9 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_registered_or_reject(update, context):
+        await update.callback_query.answer()
+        return
     query = update.callback_query
     await query.answer()
     lang = await get_lang(update, context)

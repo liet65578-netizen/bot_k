@@ -20,10 +20,10 @@ from telegram.ext import (
     filters,
 )
 
-from config import CLASSES, SPECS, ADMIN_GROUP_ID, ADMIN_IDS
-from database import upsert_user, is_registered, get_user
+from config import CLASSES, get_specs, ADMIN_GROUP_ID, ADMIN_IDS
+from database import upsert_user, is_registered, get_user, get_user_status
 from handlers.main_menu import get_main_keyboard, cancel
-from i18n import t, get_lang, menu_button_re, is_menu_button, DEFAULT_LANG
+from i18n import t, get_lang, menu_button_re, is_menu_button, DEFAULT_LANG, esc_md
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +63,13 @@ def _class_keyboard() -> InlineKeyboardMarkup:
 
 def _spec_keyboard(selected: list[str], lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
     rows = []
-    for spec in SPECS:
+    specs = get_specs(lang)
+    for spec in specs:
         mark = "✅ " if spec in selected else ""
         rows.append([InlineKeyboardButton(f"{mark}{spec}", callback_data=f"reg_spec_{spec}")])
     # Custom specs that are not in SPECS
     for spec in selected:
-        if spec not in SPECS:
+        if spec not in specs:
             rows.append([InlineKeyboardButton(f"✅ {spec}", callback_data=f"reg_spec_{spec}")])
     # "Other" button always visible
     rows.append([InlineKeyboardButton(t("reg_spec_other_btn", lang), callback_data="reg_spec_other")])
@@ -93,14 +94,24 @@ async def reg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     lang = await get_lang(update, context)
 
+    # Inactive users cannot re-register
+    status = get_user_status(user_id)
+    if status == "inactive":
+        await update.message.reply_text(
+            t("access_deactivated", lang),
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard(user_id, lang),
+        )
+        return ConversationHandler.END
+
     if is_registered(user_id):
         row = get_user(user_id)
         specs = json.loads(row["specs"])
         await update.message.reply_text(
             t("reg_already", lang,
-              full_name=row["full_name"],
-              class_name=row["class_name"],
-              specs=", ".join(specs)),
+              full_name=esc_md(row["full_name"]),
+              class_name=esc_md(row["class_name"]),
+              specs=esc_md(", ".join(specs))),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(t("reg_update_btn", lang), callback_data="reg_restart")]
@@ -145,7 +156,7 @@ async def reg_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     context.user_data["reg"]["full_name"] = text
     await update.message.reply_text(
-        t("reg_name_ok", lang, name=text),
+        t("reg_name_ok", lang, name=esc_md(text)),
         parse_mode="Markdown",
         reply_markup=_class_keyboard(),
     )
@@ -174,7 +185,6 @@ async def reg_got_class(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def reg_toggle_spec(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     data = query.data
     lang = await get_lang(update, context)
 
@@ -183,13 +193,15 @@ async def reg_toggle_spec(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not specs:
             await query.answer(t("reg_spec_empty", lang), show_alert=True)
             return REG_SPEC
+        await query.answer()
         await query.message.edit_text(
-            t("reg_spec_ok", lang, specs=", ".join(specs)),
+            t("reg_spec_ok", lang, specs=esc_md(", ".join(specs))),
             parse_mode="Markdown",
         )
         return REG_SOFTWARE
 
     if data == "reg_spec_other":
+        await query.answer()
         # Enter custom specialization mode
         await query.message.edit_text(
             t("reg_spec_other_prompt", lang),
@@ -204,6 +216,7 @@ async def reg_toggle_spec(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         specs.append(spec)
 
+    await query.answer()
     await query.message.edit_reply_markup(reply_markup=_spec_keyboard(specs, lang))
     return REG_SPEC
 
@@ -222,12 +235,16 @@ async def reg_custom_spec(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(t("reg_spec_other_prompt", lang))
         return REG_SPEC_CUSTOM
 
+    if len(text) > 40:
+        await update.message.reply_text(t("reg_spec_other_prompt", lang))
+        return REG_SPEC_CUSTOM
+
     specs = context.user_data["reg"]["specs"]
     if text not in specs:
         specs.append(text)
 
     await update.message.reply_text(
-        t("reg_spec_other_added", lang, spec=text),
+        t("reg_spec_other_added", lang, spec=esc_md(text)),
         parse_mode="Markdown",
         reply_markup=_spec_keyboard(specs, lang),
     )
@@ -248,10 +265,10 @@ async def reg_got_software(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     await update.message.reply_text(
         t("reg_confirm_summary", lang,
-          full_name=reg["full_name"],
-          class_name=reg["class_name"],
-          specs=", ".join(reg["specs"]),
-          software=text),
+          full_name=esc_md(reg["full_name"]),
+          class_name=esc_md(reg["class_name"]),
+          specs=esc_md(", ".join(reg["specs"])),
+          software=esc_md(text)),
         parse_mode="Markdown",
         reply_markup=_confirm_keyboard(lang),
     )
@@ -310,7 +327,7 @@ async def reg_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     first_name = reg["full_name"].split()[1] if len(reg["full_name"].split()) > 1 else reg["full_name"].split()[0]
     await query.message.edit_text(
-        t("reg_success", lang, name=first_name),
+        t("reg_success", lang, name=esc_md(first_name)),
         parse_mode="Markdown",
     )
     await query.message.reply_text(
@@ -391,4 +408,6 @@ registration_handler = ConversationHandler(
         CommandHandler("menu", cancel),
     ],
     allow_reentry=True,
+    per_message=False,
+    conversation_timeout=600,
 )

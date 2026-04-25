@@ -17,10 +17,10 @@ from telegram.ext import (
     filters,
 )
 
-from config import CONTENT_TYPES, LOCATIONS, ADMIN_GROUP_ID, ADMIN_IDS
+from config import get_content_types, get_locations, ADMIN_GROUP_ID, ADMIN_IDS
 from database import save_submission, get_user
 from handlers.main_menu import get_main_keyboard, cancel, ensure_registered_or_reject
-from i18n import t, get_lang, menu_button_re, is_menu_button
+from i18n import t, get_lang, menu_button_re, is_menu_button, esc_md
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +34,17 @@ CONTENT_STATES = {
 }
 
 
-def _type_keyboard() -> InlineKeyboardMarkup:
+def _type_keyboard(lang: str) -> InlineKeyboardMarkup:
+    content_types = get_content_types(lang)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(ct, callback_data=f"con_type_{ct}")] for ct in CONTENT_TYPES
+        [InlineKeyboardButton(ct, callback_data=f"con_type_{ct}")] for ct in content_types
     ])
 
 
-def _location_keyboard() -> InlineKeyboardMarkup:
+def _location_keyboard(lang: str) -> InlineKeyboardMarkup:
+    locations = get_locations(lang)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(loc, callback_data=f"con_loc_{loc}")] for loc in LOCATIONS
+        [InlineKeyboardButton(loc, callback_data=f"con_loc_{loc}")] for loc in locations
     ])
 
 
@@ -54,7 +56,7 @@ async def content_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text(
         t("con_start", lang),
         parse_mode="Markdown",
-        reply_markup=_type_keyboard(),
+        reply_markup=_type_keyboard(lang),
     )
     return CON_TYPE
 
@@ -66,7 +68,8 @@ async def con_got_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     ctype = query.data.replace("con_type_", "")
     context.user_data["con"]["type"] = ctype
 
-    if ctype == CONTENT_TYPES[2]:  # text
+    content_types = get_content_types(lang)
+    if content_types and ctype == content_types[2]:  # text
         await query.message.edit_text(
             t("con_type_text", lang, ctype=ctype), parse_mode="Markdown",
         )
@@ -82,15 +85,26 @@ async def con_got_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     lang = await get_lang(update, context)
 
     if update.message.document:
-        con["file_id"] = update.message.document.file_id
+        doc = update.message.document
+        con["file_id"] = doc.file_id
+        con["file_unique_id"] = doc.file_unique_id
+        con["file_size"] = doc.file_size
+        con["mime_type"] = doc.mime_type
         con["file_type"] = "document"
         label = t("con_file_doc", lang)
     elif update.message.photo:
-        con["file_id"] = update.message.photo[-1].file_id
+        photo = update.message.photo[-1]
+        con["file_id"] = photo.file_id
+        con["file_unique_id"] = photo.file_unique_id
+        con["file_size"] = photo.file_size
         con["file_type"] = "photo"
         label = t("con_file_photo", lang)
     elif update.message.video:
-        con["file_id"] = update.message.video.file_id
+        video = update.message.video
+        con["file_id"] = video.file_id
+        con["file_unique_id"] = video.file_unique_id
+        con["file_size"] = video.file_size
+        con["mime_type"] = video.mime_type
         con["file_type"] = "video"
         label = t("con_file_video", lang)
     elif update.message.text:
@@ -121,7 +135,7 @@ async def con_got_description(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["con"]["description"] = desc
     await update.message.reply_text(
         t("con_step4", lang), parse_mode="Markdown",
-        reply_markup=_location_keyboard(),
+        reply_markup=_location_keyboard(lang),
     )
     return CON_LOCATION
 
@@ -146,14 +160,18 @@ async def con_got_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         location=location,
         file_id=con.get("file_id"),
         file_type=con.get("file_type", "unknown"),
+        file_unique_id=con.get("file_unique_id"),
+        file_size=con.get("file_size"),
+        mime_type=con.get("mime_type"),
+        text_content=con.get("text_content"),
     )
 
     # Notify admins
     admin_text = t("notify_new_submission", "ru",
-                   sub_id=sub_id, submitter=submitter_name,
-                   username=user.username or "—",
-                   ctype=con["type"], location=location,
-                   description=con["description"])
+                   sub_id=sub_id, submitter=esc_md(submitter_name),
+                   username=esc_md(user.username or "—"),
+                   ctype=esc_md(con["type"]), location=esc_md(location),
+                   description=esc_md(con["description"]))
     bot = query.get_bot()
     try:
         if con.get("file_type") == "photo" and con.get("file_id"):
@@ -168,7 +186,7 @@ async def con_got_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             full_text = admin_text
             if con.get("text_content"):
-                full_text += f"\n\n📄 Текст:\n{con['text_content']}"
+                full_text += f"\n\n📄 Текст:\n{esc_md(con['text_content'])}"
             await bot.send_message(chat_id=ADMIN_GROUP_ID, text=full_text, parse_mode="Markdown")
     except Exception as e:
         logger.warning("Failed to send content to admin group: %s", e)
@@ -222,4 +240,6 @@ content_handler = ConversationHandler(
         CommandHandler("menu", cancel),
     ],
     allow_reentry=True,
+    per_message=False,
+    conversation_timeout=600,
 )
